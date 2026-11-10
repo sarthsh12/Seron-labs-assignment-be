@@ -12,7 +12,9 @@
   "description": "SiteTrack backend API",
   "dependencies": {
     "fastify": "^5.12.8",
-    "pg": "^8.23.1"
+    "jose": "^6.2.16",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

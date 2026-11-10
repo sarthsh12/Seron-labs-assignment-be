@@ -1,7 +1,10 @@
 import pg from 'pg';
 import { config } from './config.js';
 
-// One shared connection pool for the whole app.
+// bigint ids fit safely in a JS number at this scale; plain dates stay "YYYY-MM-DD" strings to avoid time zone shifts.
+pg.types.setTypeParser(pg.types.builtins.INT8, Number);
+pg.types.setTypeParser(pg.types.builtins.DATE, (value) => value);
+
 export const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 20 });
 
 // Runs `fn` inside a transaction: commits if it succeeds, rolls back if it throws.

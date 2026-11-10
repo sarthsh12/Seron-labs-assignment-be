@@ -1,14 +1,41 @@
 import Fastify from 'fastify';
+import { ZodError } from 'zod';
+import { authenticate } from './auth/authenticate.js';
 import { pool } from './db.js';
+import { AppError } from './lib/errors.js';
+import { protectedAuthRoutes, publicAuthRoutes } from './routes/auth.js';
 
-// Builds the Fastify app. Kept separate from server.ts so tests can create an app without listening on a port.
 export function buildApp() {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
 
-  // Health check: confirms the API is up and can reach the database.
+  app.setErrorHandler((err, request, reply) => {
+    if (err instanceof ZodError) {
+      return reply.code(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid request', details: err.issues },
+      });
+    }
+    if (err instanceof AppError) {
+      return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
+    }
+    const status = (err as { statusCode?: number }).statusCode;
+    if (status && status < 500) {
+      return reply.code(status).send({ error: { code: 'BAD_REQUEST', message: (err as Error).message } });
+    }
+    request.log.error(err);
+    return reply.code(500).send({ error: { code: 'INTERNAL', message: 'Something went wrong' } });
+  });
+
   app.get('/health', async () => {
     await pool.query('SELECT 1');
     return { status: 'ok' };
+  });
+
+  app.register(publicAuthRoutes);
+
+  // Everything registered inside this scope requires a valid, unrevoked session.
+  app.register(async (secured) => {
+    secured.addHook('onRequest', authenticate);
+    secured.register(protectedAuthRoutes);
   });
 
   return app;
