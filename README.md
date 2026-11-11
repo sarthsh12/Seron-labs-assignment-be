@@ -43,4 +43,23 @@ curl localhost:3000/health   # {"status":"ok"}
 - **Trade-off:** the brief lets people choose any role at registration, including SuperAdmin. That is
   implemented as specified; in production, elevated roles would be granted by an existing admin.
 
+### Projects and access control
+
+- **One access check for every project route** (`requireProjectAccess`). A non-member, or a project
+  that doesn't exist or was removed, gets the same `404 Project not found`, so guessing IDs reveals
+  nothing. Members who are not admins get `403` on admin-only actions, since they already know the
+  project exists.
+- **Public IDs are the codes** (`PRJ-0042`); internal numeric ids never leave the API.
+- **The projects list is one SQL query**: visible projects, member counts and task stats (counts by
+  status, percent done, late, blocked) are computed together, and the list filter comes from the
+  same membership join, so counts can never include projects the user can't see.
+- **Late is computed from today's date at read time**, never stored, so it is always current.
+- **Blocked uses a stored counter** (`open_prereq_count`, the number of direct prerequisites not
+  yet done) kept up to date when tasks change status and when dependencies change. That turns
+  "is this task blocked?" into a column check instead of a graph walk over 1M dependencies.
+- **Removing a project is a soft delete**, refused while deliveries are still in transit, and it
+  withdraws pending invitations. The project's code is never reused.
+- **SuperAdmins can see and work in every project** but are project admins only where they've
+  been made one, matching "only project admins change members".
+
 _More sections (trade-offs, API docs, seeding data) will be added as the project grows._

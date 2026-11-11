@@ -4,6 +4,7 @@ import { authenticate } from './auth/authenticate.js';
 import { pool } from './db.js';
 import { AppError } from './lib/errors.js';
 import { protectedAuthRoutes, publicAuthRoutes } from './routes/auth.js';
+import { projectRoutes } from './routes/projects.js';
 
 export function buildApp() {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
@@ -16,6 +17,10 @@ export function buildApp() {
     }
     if (err instanceof AppError) {
       return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
+    }
+    // Database CHECK constraints (e.g. end date before start date) are the client's fault, not a server error.
+    if ((err as { code?: string }).code === '23514') {
+      return reply.code(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Invalid values' } });
     }
     const status = (err as { statusCode?: number }).statusCode;
     if (status && status < 500) {
@@ -36,6 +41,7 @@ export function buildApp() {
   app.register(async (secured) => {
     secured.addHook('onRequest', authenticate);
     secured.register(protectedAuthRoutes);
+    secured.register(projectRoutes);
   });
 
   return app;
