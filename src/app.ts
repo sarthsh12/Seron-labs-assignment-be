@@ -4,6 +4,8 @@ import { authenticate } from './auth/authenticate.js';
 import { pool } from './db.js';
 import { AppError } from './lib/errors.js';
 import { protectedAuthRoutes, publicAuthRoutes } from './routes/auth.js';
+import { memberRoutes } from './routes/members.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { projectRoutes } from './routes/projects.js';
 
 export function buildApp() {
@@ -42,6 +44,8 @@ export function buildApp() {
     secured.addHook('onRequest', authenticate);
     secured.register(protectedAuthRoutes);
     secured.register(projectRoutes);
+    secured.register(memberRoutes);
+    secured.register(notificationRoutes);
   });
 
   return app;
