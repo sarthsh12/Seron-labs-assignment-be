@@ -40,6 +40,15 @@ export async function requireProjectAccess(
   return { projectId, code: row.code, isMember, isAdmin: row.isAdmin === true };
 }
 
+// Locks the project row for the rest of the transaction, so concurrent membership changes on the same
+// project run one at a time (e.g. two admins can't demote each other and leave the project with none).
+export async function lockProjectAsAdmin(user: AuthUser, code: string, client: pg.PoolClient): Promise<ProjectAccess> {
+  const projectId = projectIdFromCode(code);
+  if (projectId === null) throw notFound('Project not found');
+  await client.query('SELECT 1 FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE', [projectId]);
+  return requireProjectAdmin(user, code, client);
+}
+
 // Members who aren't admins already know the project exists, so they get 403 rather than 404.
 export async function requireProjectAdmin(
   user: AuthUser,

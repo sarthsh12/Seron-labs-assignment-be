@@ -62,4 +62,21 @@ curl localhost:3000/health   # {"status":"ok"}
 - **SuperAdmins can see and work in every project** but are project admins only where they've
   been made one, matching "only project admins change members".
 
+### Members, invitations and notifications
+
+- **Invite by email.** Admins type the email of a registered user. An unknown email returns 404;
+  this does reveal whether an email is registered, but only to project admins, and the frontend
+  needs it to show a useful error. A public user directory was avoided on purpose.
+- **Notifications are the invitee's invitations**, newest first, with an unread count. Withdrawn
+  invitations are hidden, as if never sent. Answering or withdrawing marks it read.
+- **Only the invitee can answer.** Anyone else gets 404 for that invitation id.
+- **"At least one project admin" holds under concurrency.** Every membership change first locks
+  the project row (`SELECT ... FOR UPDATE`), so changes to one project run one at a time. Two
+  admins demoting each other at the same moment can't both succeed; the second sees it is no
+  longer an admin.
+- **Consistent lock order** (project row, then invitation row) in every path avoids deadlocks
+  between, for example, accepting an invitation and removing the project.
+- **Removal takes effect on the next request**, because project access is read from
+  `project_members` on every request rather than stored in the token.
+
 _More sections (trade-offs, API docs, seeding data) will be added as the project grows._

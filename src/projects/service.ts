@@ -205,7 +205,8 @@ export async function deleteProject(user: AuthUser, code: string): Promise<void>
     if (rowCount) throw conflict('Project has deliveries in transit; resolve them before removing it');
     await client.query('UPDATE projects SET deleted_at = now(), updated_at = now() WHERE id = $1', [access.projectId]);
     await client.query(
-      `UPDATE invitations SET status = 'withdrawn', responded_at = now() WHERE project_id = $1 AND status = 'pending'`,
+      `UPDATE invitations SET status = 'withdrawn', responded_at = now(), read_at = COALESCE(read_at, now())
+        WHERE project_id = $1 AND status = 'pending'`,
       [access.projectId],
     );
   });
