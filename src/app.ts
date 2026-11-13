@@ -7,6 +7,7 @@ import { protectedAuthRoutes, publicAuthRoutes } from './routes/auth.js';
 import { memberRoutes } from './routes/members.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { projectRoutes } from './routes/projects.js';
+import { taskRoutes } from './routes/tasks.js';
 
 export function buildApp() {
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
@@ -32,6 +33,10 @@ export function buildApp() {
     return reply.code(500).send({ error: { code: 'INTERNAL', message: 'Something went wrong' } });
   });
 
+  app.setNotFoundHandler((_request, reply) =>
+    reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'Route not found' } }),
+  );
+
   app.get('/health', async () => {
     await pool.query('SELECT 1');
     return { status: 'ok' };
@@ -46,6 +51,7 @@ export function buildApp() {
     secured.register(projectRoutes);
     secured.register(memberRoutes);
     secured.register(notificationRoutes);
+    secured.register(taskRoutes);
   });
 
   return app;

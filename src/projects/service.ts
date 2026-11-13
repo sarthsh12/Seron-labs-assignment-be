@@ -3,6 +3,7 @@ import { requireProjectAccess, requireProjectAdmin } from '../auth/access.js';
 import { pool, withTransaction } from '../db.js';
 import { conflict } from '../lib/errors.js';
 import type { Page } from '../lib/pagination.js';
+import { escapeLike } from '../lib/sql.js';
 
 export type ProjectSort = 'name' | 'startDate' | 'percentDone' | 'lateTasks';
 
@@ -127,8 +128,6 @@ function toSummary(r: SummaryRow): ProjectSummary {
     createdAt: r.created_at.toISOString(),
   };
 }
-
-const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => '\\' + c);
 
 export async function listProjects(user: AuthUser, query: ProjectListQuery): Promise<Page<ProjectSummary>> {
   const search = query.q?.trim() ? escapeLike(query.q.trim()) : null;
