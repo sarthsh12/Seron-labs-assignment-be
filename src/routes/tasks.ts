@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { paginationQuery } from '../lib/pagination.js';
 import { parse } from '../lib/validation.js';
+import * as dependencies from '../tasks/dependencies.js';
 import * as tasks from '../tasks/service.js';
 
 const STATUSES = ['not_started', 'in_progress', 'done'] as const;
@@ -39,6 +40,8 @@ const listQuery = z.object({
 const projectParams = z.object({ projectId: z.string() });
 const taskParams = projectParams.extend({ taskId: z.string() });
 const actionParams = taskParams.extend({ action: z.enum(['start', 'complete', 'reopen']) });
+const dependencyParams = taskParams.extend({ dependsOnId: z.string() });
+const dependencyBody = z.object({ dependsOn: z.string().trim().min(1).max(40) });
 
 export async function taskRoutes(app: FastifyInstance) {
   app.get('/projects/:projectId/tasks', async (request) => {
@@ -67,6 +70,19 @@ export async function taskRoutes(app: FastifyInstance) {
     const { projectId, taskId } = parse(taskParams, request.params);
     await tasks.deleteTask(request.user, projectId, taskId);
     reply.code(204);
+  });
+
+  app.post('/projects/:projectId/tasks/:taskId/dependencies', async (request, reply) => {
+    const { projectId, taskId } = parse(taskParams, request.params);
+    const { dependsOn } = parse(dependencyBody, request.body);
+    const task = await dependencies.addDependency(request.user, projectId, taskId, dependsOn);
+    reply.code(201);
+    return task;
+  });
+
+  app.delete('/projects/:projectId/tasks/:taskId/dependencies/:dependsOnId', async (request) => {
+    const { projectId, taskId, dependsOnId } = parse(dependencyParams, request.params);
+    return dependencies.removeDependency(request.user, projectId, taskId, dependsOnId);
   });
 
   // POST /projects/PRJ-0001/tasks/PRJ-0001-T-0003/start | complete | reopen

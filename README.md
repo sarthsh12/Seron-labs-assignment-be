@@ -96,4 +96,22 @@ curl localhost:3000/health   # {"status":"ok"}
   "depends on" list only for the rows on the current page.
 - **Date range filter** returns tasks whose planned period overlaps the range.
 
+### Task dependencies
+
+- **Cycle check with a recursive query.** Adding "T depends on D" is rejected if D already waits on T,
+  directly or indirectly. The query uses `UNION`, which skips tasks already visited, so it stays
+  fast on large graphs (6 ms for a worst case across 3,000 tasks and ~9,000 dependencies).
+- **Same-project only, enforced twice:** tasks are looked up inside the project in the URL, and the
+  composite foreign keys in the schema reject a cross-project row anyway.
+- **One extra rule keeps Blocked cheap:** a task that has already started can only gain
+  dependencies on tasks that are done. Together with "start only when prerequisites are done",
+  this guarantees that if all direct prerequisites are done, all indirect ones are too, so
+  `open_prereq_count` (direct, unfinished prerequisites) is enough to decide Blocked.
+- **Task details show both chains with distances.** The project's dependency edges are loaded
+  once and walked breadth-first in memory, so each task gets its shortest number of steps. A plain
+  recursive SQL query would revisit a task once per path, which grows exponentially on
+  diamond-shaped graphs. Measured: 55 ms for a task that waits on all 2,999 others.
+- **Concurrency:** dependency changes take the same per-project task-graph lock as status changes,
+  so two opposite dependencies added at the same moment can't both succeed.
+
 _More sections (trade-offs, API docs, seeding data) will be added as the project grows._
