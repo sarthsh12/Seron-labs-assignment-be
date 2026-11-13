@@ -18,6 +18,42 @@ Check it's working:
 curl localhost:3000/health   # {"status":"ok"}
 ```
 
+## Load sample data
+
+With the stack running, fill the database at the scale in the brief (about 4 minutes):
+
+```bash
+docker compose exec api node dist/seed.js          # add --reset to replace existing data
+```
+
+| Table | Rows |
+|---|---|
+| users | 5,000 |
+| projects | 2,000 (20 with 3,000 tasks, the rest about 222) |
+| invitations | 50,000 |
+| tasks | 500,000 |
+| task dependencies | ~1,000,000 |
+| materials | 20,000 |
+| deliveries | 400,000 |
+| delivery lines | ~3,000,000 |
+
+Every password is `password123`. Useful logins:
+
+- `admin@sitetrack.test`: SuperAdmin
+- `manager@sitetrack.test`: company store manager
+- `user@sitetrack.test`: admin of PRJ-0001 (3,000 tasks), member of several other projects, with
+  pending invitations
+
+The data follows the same rules as the API:
+
+- dependencies only point to earlier tasks, so there are no cycles
+- started tasks have all prerequisites done
+- Blocked counters match
+- project stock is derived from delivery history and is never negative
+- in-transit totals match the open deliveries
+
+Rows are generated inside Postgres with `generate_series`, so nothing large is sent over the connection.
+
 ## Decisions
 
 - **TypeScript + Fastify**: fast, well-typed, and widely used.

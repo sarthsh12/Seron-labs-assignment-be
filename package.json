@@ -6,7 +6,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "migrate": "tsx src/migrate.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "seed": "node dist/seed.js",
+    "seed:dev": "tsx src/seed.ts"
   },
   "license": "ISC",
   "description": "SiteTrack backend API",
