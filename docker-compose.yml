@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:17-alpine
+    shm_size: 256mb # room for large parallel queries (the default 64 MB is too small at seed scale)
     environment:
       POSTGRES_USER: sitetrack
       POSTGRES_PASSWORD: sitetrack
