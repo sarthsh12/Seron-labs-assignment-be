@@ -114,4 +114,30 @@ curl localhost:3000/health   # {"status":"ok"}
 - **Concurrency:** dependency changes take the same per-project task-graph lock as status changes,
   so two opposite dependencies added at the same moment can't both succeed.
 
+### Materials, stores and deliveries
+
+- **Who does what.** Everyone logged in reads the materials catalogue; company store managers and
+  SuperAdmins manage it, add supplier stock, set reorder points and send to projects. Project
+  members send back to the company store and record or reject incoming deliveries. The sending side
+  cancels; the receiving side records or rejects. Anyone who can see neither side gets 404.
+- **Every stock movement is one transaction.** Adding stock, sending, recording, rejecting and
+  cancelling either fully happen or not at all; a send with one short line changes nothing.
+- **Stock never goes negative, even with concurrent sends.** The sender's stock rows are locked
+  (`SELECT ... FOR UPDATE`) before checking quantities, so concurrent sends queue and each sees
+  the latest quantity; `CHECK (quantity >= 0)` backs this up in the database. Tested with 10
+  simultaneous sends against stock for 6: exactly 6 succeeded.
+- **No deadlocks between stock movements.** All stock rows a transaction needs are locked in one
+  query ordered by `(store_id, material_id)`, so every transaction takes its locks in the same
+  order. As a safety net, `withTransaction` retries a transaction Postgres cancels for a deadlock
+  or serialization failure (up to 3 attempts).
+- **In-transit quantities are stored**, not summed from 3M delivery lines: `in_transit_out` on the
+  sender's stock row changes in the same transaction as the delivery, so the company stock screen
+  reads it directly.
+- **"Last delivery in or out"** (`last_movement_at`) is set when a store sends or receives.
+- **Lists page first, then load lines.** Delivery lists pick the page of deliveries using indexes on
+  `sent_at`, then fetch material lines only for those rows.
+- **Removing a material is a soft delete**, refused while any store holds it or has it in transit.
+- **Quantities are `numeric(14,3)`** (exact, allows 2.5 m³) and are compared in SQL, never as
+  JavaScript floats.
+
 _More sections (trade-offs, API docs, seeding data) will be added as the project grows._

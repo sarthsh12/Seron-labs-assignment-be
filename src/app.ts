@@ -4,7 +4,10 @@ import { authenticate } from './auth/authenticate.js';
 import { pool } from './db.js';
 import { AppError } from './lib/errors.js';
 import { protectedAuthRoutes, publicAuthRoutes } from './routes/auth.js';
+import { deliveryRoutes } from './routes/deliveries.js';
+import { materialRoutes } from './routes/materials.js';
 import { memberRoutes } from './routes/members.js';
+import { storeRoutes } from './routes/stores.js';
 import { notificationRoutes } from './routes/notifications.js';
 import { projectRoutes } from './routes/projects.js';
 import { taskRoutes } from './routes/tasks.js';
@@ -19,7 +22,9 @@ export function buildApp() {
       });
     }
     if (err instanceof AppError) {
-      return reply.code(err.statusCode).send({ error: { code: err.code, message: err.message } });
+      return reply
+        .code(err.statusCode)
+        .send({ error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } });
     }
     // Database CHECK constraints (e.g. end date before start date) are the client's fault, not a server error.
     if ((err as { code?: string }).code === '23514') {
@@ -52,6 +57,9 @@ export function buildApp() {
     secured.register(memberRoutes);
     secured.register(notificationRoutes);
     secured.register(taskRoutes);
+    secured.register(materialRoutes);
+    secured.register(storeRoutes);
+    secured.register(deliveryRoutes);
   });
 
   return app;
