@@ -79,4 +79,21 @@ curl localhost:3000/health   # {"status":"ok"}
 - **Removal takes effect on the next request**, because project access is read from
   `project_members` on every request rather than stored in the token.
 
+### Tasks
+
+- **Task numbers come from a counter on the project row** (`UPDATE ... RETURNING`). The row lock
+  queues concurrent creates in one project, a failed insert rolls the counter back, and deletes
+  never lower it, so numbers are unique, gap-free and never reused.
+- **Status changes are explicit actions** (`start`, `complete`, `reopen`); every other transition
+  returns 409 with the reason. Task details return `allowedActions` so the frontend shows only
+  valid buttons.
+- **Reopen checks only direct dependents.** An indirect dependent can only have started if a direct
+  one is done, so this is equivalent to "no task that waits on it has started".
+- **Per-project task-graph lock.** Status changes and deletions take a transaction-scoped advisory
+  lock on the project, so updates to `open_prereq_count` never race or deadlock. Different projects
+  never wait on each other.
+- **Task list** computes Late and Blocked per row, dependent counts once per project, and the
+  "depends on" list only for the rows on the current page.
+- **Date range filter** returns tasks whose planned period overlaps the range.
+
 _More sections (trade-offs, API docs, seeding data) will be added as the project grows._
