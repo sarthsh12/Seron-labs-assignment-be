@@ -5,6 +5,7 @@ import { pool, withTransaction } from '../db.js';
 import { conflict, notFound } from '../lib/errors.js';
 import type { Page } from '../lib/pagination.js';
 import { escapeLike } from '../lib/sql.js';
+import { type ChainEntry, loadChains, lockTaskGraph } from './graph.js';
 
 export type TaskStatus = 'not_started' | 'in_progress' | 'done';
 export type TaskAction = 'start' | 'complete' | 'reopen';
@@ -26,6 +27,8 @@ export interface Task {
 
 export interface TaskDetail extends Task {
   allowedActions: TaskAction[];
+  waitsOn: ChainEntry[];
+  waitedOnBy: ChainEntry[];
 }
 
 export interface TaskListQuery {
@@ -48,13 +51,6 @@ const SORT_COLUMNS: Record<TaskSort, string> = {
   endDate: 'planned_end',
   dependents: 'dependents_count',
 };
-
-// Status changes, task deletion and dependency changes in one project take this lock, so they run one
-// at a time. That keeps open_prereq_count correct and stops two concurrent edits from creating a cycle.
-const TASK_GRAPH_LOCK = 1;
-export async function lockTaskGraph(client: pg.PoolClient, projectId: number): Promise<void> {
-  await client.query('SELECT pg_advisory_xact_lock($1, $2)', [TASK_GRAPH_LOCK, projectId]);
-}
 
 interface TaskFilter extends Partial<TaskListQuery> {
   code?: string;
@@ -180,7 +176,7 @@ export async function listTasks(user: AuthUser, projectCode: string, query: Task
   return { items: rows.map(toTask), page: query.page, pageSize: query.pageSize, total: rows[0]?.total ?? 0 };
 }
 
-async function loadTaskDetail(db: pg.Pool | pg.PoolClient, projectId: number, taskCode: string): Promise<TaskDetail> {
+export async function loadTaskDetail(db: pg.Pool | pg.PoolClient, projectId: number, taskCode: string): Promise<TaskDetail> {
   const { rows } = await runTaskQuery(db, projectId, { code: taskCode }, 'id', 'asc', 1, 0, true);
   const r = rows[0];
   if (!r) throw notFound('Task not found');
@@ -188,7 +184,8 @@ async function loadTaskDetail(db: pg.Pool | pg.PoolClient, projectId: number, ta
   if (r.can_start) allowedActions.push('start');
   if (r.can_complete) allowedActions.push('complete');
   if (r.can_reopen) allowedActions.push('reopen');
-  return { ...toTask(r), allowedActions };
+  const chains = await loadChains(db, projectId, r.id);
+  return { ...toTask(r), allowedActions, ...chains };
 }
 
 export async function getTask(user: AuthUser, projectCode: string, taskCode: string): Promise<TaskDetail> {
