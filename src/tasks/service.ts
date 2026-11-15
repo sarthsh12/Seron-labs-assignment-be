@@ -216,6 +216,7 @@ export async function createTask(
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [projectId, taskNo, code, input.name, input.plannedStart, input.plannedEnd],
     );
+    await adjustStats(client, projectId, 1, 0);
     return loadTaskDetail(client, projectId, code);
   });
 }
@@ -291,6 +292,7 @@ export async function applyAction(
       if (task.status !== 'in_progress') throw conflict('Only an In progress task can be marked as done');
       await setStatus(client, task.id, 'done');
       await adjustDependents(client, task.id, -1);
+      await adjustStats(client, projectId, 0, 1);
     } else {
       if (task.status !== 'done') throw conflict('Only a Done task can be reopened');
       // Checking direct dependents is enough: an indirect dependent can only have started if a direct one is done.
@@ -302,9 +304,19 @@ export async function applyAction(
       if (rowCount) throw conflict('A task that waits on this one has already started');
       await setStatus(client, task.id, 'in_progress');
       await adjustDependents(client, task.id, 1);
+      await adjustStats(client, projectId, 0, -1);
     }
     return loadTaskDetail(client, projectId, taskCode);
   });
+}
+
+// Keeps project_task_stats in step with the tasks table, inside the caller's transaction.
+async function adjustStats(client: pg.PoolClient, projectId: number, tasks: number, done: number) {
+  await client.query(
+    `UPDATE project_task_stats SET task_count = task_count + $2, done_count = done_count + $3
+      WHERE project_id = $1`,
+    [projectId, tasks, done],
+  );
 }
 
 // The task number is never reused: the project's counter only goes up.
@@ -315,5 +327,6 @@ export async function deleteTask(user: AuthUser, projectCode: string, taskCode: 
     const task = await lockTask(client, projectId, taskCode);
     if (task.status !== 'done') await adjustDependents(client, task.id, -1);
     await client.query('DELETE FROM tasks WHERE id = $1', [task.id]);
+    await adjustStats(client, projectId, -1, task.status === 'done' ? -1 : 0);
   });
 }

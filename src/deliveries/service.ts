@@ -220,28 +220,26 @@ export interface DeliveryFilter {
 
 interface DeliveryRow extends Omit<Delivery, 'allowedActions'> {
   projectId: number;
-  total: number;
 }
 
+const FILTER = `
+  ($1::bigint IS NULL OR d.project_id = $1)
+  AND ($2::bigint IS NULL OR d.id = $2)
+  AND ($3::text IS NULL OR d.direction = $3)
+  AND ($4::text[] IS NULL OR d.status = ANY($4))
+  AND ($5::date IS NULL OR d.sent_at >= $5)
+  AND ($6::date IS NULL OR d.sent_at < $6::date + 1)`;
+
 // Filters and pages the deliveries first, then fetches material lines only for the rows on the page.
-async function queryDeliveries(
-  projectId: number | null,
-  f: DeliveryFilter & { id?: number },
-): Promise<DeliveryRow[]> {
+async function queryDeliveries(projectId: number | null, f: DeliveryFilter & { id?: number }): Promise<DeliveryRow[]> {
   const { rows } = await pool.query<DeliveryRow>(
     `WITH page AS (
-       SELECT d.*, count(*) OVER () AS total
-         FROM deliveries d
-        WHERE ($1::bigint IS NULL OR d.project_id = $1)
-          AND ($2::bigint IS NULL OR d.id = $2)
-          AND ($3::text IS NULL OR d.direction = $3)
-          AND ($4::text[] IS NULL OR d.status = ANY($4))
-          AND ($5::date IS NULL OR d.sent_at >= $5)
-          AND ($6::date IS NULL OR d.sent_at < $6::date + 1)
+       SELECT d.* FROM deliveries d
+        WHERE ${FILTER}
         ORDER BY d.sent_at DESC, d.id DESC
         LIMIT $7 OFFSET $8
      )
-     SELECT page.id, page.project_id AS "projectId", page.direction, page.status, page.total,
+     SELECT page.id, page.project_id AS "projectId", page.direction, page.status,
             page.sent_at AS "sentAt", page.resolved_at AS "resolvedAt",
             json_build_object('id', p.code, 'name', p.name) AS project,
             json_build_object('id', su.id, 'name', su.name) AS "sentBy",
@@ -255,33 +253,42 @@ async function queryDeliveries(
        JOIN users su ON su.id = page.sent_by
        LEFT JOIN users ru ON ru.id = page.resolved_by
       ORDER BY page.sent_at DESC, page.id DESC`,
-    [
-      projectId,
-      f.id ?? null,
-      f.direction ?? null,
-      f.status?.length ? f.status : null,
-      f.from ?? null,
-      f.to ?? null,
-      f.pageSize,
-      (f.page - 1) * f.pageSize,
-    ],
+    [...filterParams(projectId, f), f.pageSize, (f.page - 1) * f.pageSize],
   );
   return rows;
 }
 
-function toPage(rows: DeliveryRow[], f: DeliveryFilter, sidesFor: (projectId: number) => Sides): Page<Delivery> {
+function filterParams(projectId: number | null, f: DeliveryFilter & { id?: number }) {
+  return [projectId, f.id ?? null, f.direction ?? null, f.status?.length ? f.status : null, f.from ?? null, f.to ?? null];
+}
+
+// Counted separately: a total computed alongside the page (count(*) OVER ()) makes Postgres read and sort
+// every matching row before returning 20, while this count and the index-ordered page are each cheap.
+async function countDeliveries(projectId: number | null, f: DeliveryFilter): Promise<number> {
+  const { rows } = await pool.query<{ total: number }>(
+    `SELECT count(*) AS total FROM deliveries d WHERE ${FILTER}`,
+    filterParams(projectId, f),
+  );
+  return rows[0].total;
+}
+
+async function listDeliveries(
+  projectId: number | null,
+  f: DeliveryFilter,
+  sidesFor: (projectId: number) => Sides,
+): Promise<Page<Delivery>> {
+  const [rows, total] = await Promise.all([queryDeliveries(projectId, f), countDeliveries(projectId, f)]);
   return {
-    items: rows.map(({ total: _, projectId, ...d }) => ({ ...d, allowedActions: allowedActions(d, sidesFor(projectId)) })),
+    items: rows.map(({ projectId, ...d }) => ({ ...d, allowedActions: allowedActions(d, sidesFor(projectId)) })),
     page: f.page,
     pageSize: f.pageSize,
-    total: rows[0]?.total ?? 0,
+    total,
   };
 }
 
 export async function listProjectDeliveries(user: AuthUser, projectCode: string, f: DeliveryFilter) {
   const { projectId } = await requireProjectAccess(user, projectCode);
-  const rows = await queryDeliveries(projectId, f);
-  return toPage(rows, f, () => ({ company: canUseCompanyStore(user), project: true }));
+  return listDeliveries(projectId, f, () => ({ company: canUseCompanyStore(user), project: true }));
 }
 
 export async function listCompanyDeliveries(user: AuthUser, f: DeliveryFilter & { project?: string }) {
@@ -291,8 +298,7 @@ export async function listCompanyDeliveries(user: AuthUser, f: DeliveryFilter & 
     projectId = projectIdFromCode(f.project);
     if (projectId === null) throw badRequest('Unknown project');
   }
-  const rows = await queryDeliveries(projectId, f);
-  return toPage(rows, f, () => ({ company: true, project: user.role === 'super_admin' }));
+  return listDeliveries(projectId, f, () => ({ company: true, project: user.role === 'super_admin' }));
 }
 
 // Visible to the company store side and to members of the delivery's project; 404 for everyone else.
@@ -301,6 +307,6 @@ export async function getDelivery(user: AuthUser, id: number): Promise<Delivery>
   if (!row) throw notFound('Delivery not found');
   const sides = await viewerSides(pool, user, row.projectId);
   if (!sides.company && !sides.project) throw notFound('Delivery not found');
-  const { total: _, projectId: __, ...d } = row;
+  const { projectId: _, ...d } = row;
   return { ...d, allowedActions: allowedActions(d, sides) };
 }

@@ -38,60 +38,52 @@ const SORT_COLUMNS: Record<ProjectSort, string> = {
   lateTasks: 'late',
 };
 
-// Builds every project row the user may see, with its task and member stats, in one round trip.
-// Late and blocked are worked out from today's date and open_prereq_count, never stored.
-function summarySql(sort: ProjectSort, order: 'asc' | 'desc') {
+// Late = not started with a past start date, or in progress with a past end date (a not-started task
+// past its end date is also past its start). Each half is a range read on its own partial index.
+const LATE_COUNT = (projectId: string) => `
+  (SELECT count(*) FROM tasks WHERE project_id = ${projectId} AND status = 'not_started' AND planned_start < CURRENT_DATE)
+  + (SELECT count(*) FROM tasks WHERE project_id = ${projectId} AND status = 'in_progress' AND planned_end < CURRENT_DATE)`;
+
+// Three stages: rank the visible projects using only cheap numbers (stored totals, and late counts from
+// small indexes when sorting or filtering by them), take one page, then compute the full stats for
+// just that page. A SuperAdmin sees 2,000 projects, but only 20 get the full treatment.
+function summarySql(sort: ProjectSort, order: 'asc' | 'desc', needLate: boolean) {
   const dir = order === 'desc' ? 'DESC' : 'ASC';
   return `
 WITH visible AS (
   SELECT p.id, p.code, p.name, p.planned_start, p.planned_end, p.created_at,
-         COALESCE(pm.is_admin, false) AS is_admin
+         COALESCE(pm.is_admin, false) AS is_admin,
+         CASE WHEN s.task_count = 0 THEN 0
+              ELSE round(100.0 * s.done_count / s.task_count, 1)::float8 END AS percent_done
+         ${needLate ? `, ${LATE_COUNT('p.id')} AS late` : ''}
     FROM projects p
+    JOIN project_task_stats s ON s.project_id = p.id
     LEFT JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
    WHERE p.deleted_at IS NULL
      AND ($2::boolean OR pm.user_id IS NOT NULL)
      AND ($3::bigint IS NULL OR p.id = $3)
      AND ($4::text IS NULL OR p.name ILIKE '%' || $4 || '%' OR p.code ILIKE $4 || '%')
 ),
-task_stats AS (
-  SELECT t.project_id,
-         count(*) AS total,
-         count(*) FILTER (WHERE t.status = 'not_started') AS not_started,
-         count(*) FILTER (WHERE t.status = 'in_progress') AS in_progress,
-         count(*) FILTER (WHERE t.status = 'done') AS done,
-         count(*) FILTER (WHERE t.status <> 'done' AND (t.planned_end < CURRENT_DATE
-                            OR (t.status = 'not_started' AND t.planned_start < CURRENT_DATE))) AS late,
-         count(*) FILTER (WHERE t.status <> 'done' AND t.open_prereq_count > 0) AS blocked
-    FROM tasks t
-    JOIN visible v ON v.id = t.project_id
-   GROUP BY t.project_id
-),
-member_stats AS (
-  SELECT pm.project_id, count(*) AS members
-    FROM project_members pm
-    JOIN visible v ON v.id = pm.project_id
-   GROUP BY pm.project_id
-),
-summary AS (
-  SELECT v.*,
-         COALESCE(ms.members, 0) AS members,
-         COALESCE(ts.total, 0) AS total,
-         COALESCE(ts.not_started, 0) AS not_started,
-         COALESCE(ts.in_progress, 0) AS in_progress,
-         COALESCE(ts.done, 0) AS done,
-         COALESCE(ts.late, 0) AS late,
-         COALESCE(ts.blocked, 0) AS blocked,
-         CASE WHEN COALESCE(ts.total, 0) = 0 THEN 0
-              ELSE round(100.0 * ts.done / ts.total, 1)::float8 END AS percent_done
-    FROM visible v
-    LEFT JOIN task_stats ts ON ts.project_id = v.id
-    LEFT JOIN member_stats ms ON ms.project_id = v.id
+page AS (
+  SELECT *, count(*) OVER () AS total_count
+    FROM visible
+   WHERE ${needLate ? '($5::boolean IS NOT TRUE OR late > 0)' : '$5::boolean IS NOT TRUE'}
+   ORDER BY ${SORT_COLUMNS[sort]} ${dir}, id ${dir}
+   LIMIT $6 OFFSET $7
 )
-SELECT *, count(*) OVER () AS total_count
-  FROM summary
- WHERE ($5::boolean IS NOT TRUE OR late > 0)
- ORDER BY ${SORT_COLUMNS[sort]} ${dir}, id ${dir}
- LIMIT $6 OFFSET $7`;
+SELECT page.id, page.code, page.name, page.planned_start, page.planned_end, page.created_at, page.is_admin,
+       page.percent_done, page.total_count, ts.*, ms.members
+  FROM page
+  CROSS JOIN LATERAL (
+    SELECT count(*) AS total,
+           count(*) FILTER (WHERE t.status = 'not_started') AS not_started,
+           count(*) FILTER (WHERE t.status = 'in_progress') AS in_progress,
+           count(*) FILTER (WHERE t.status = 'done') AS done,
+           count(*) FILTER (WHERE t.status <> 'done' AND t.open_prereq_count > 0) AS blocked,
+           ${LATE_COUNT('page.id')} AS late
+      FROM tasks t WHERE t.project_id = page.id) ts
+  CROSS JOIN LATERAL (SELECT count(*) AS members FROM project_members WHERE project_id = page.id) ms
+ ORDER BY ${SORT_COLUMNS[sort]} ${dir}, id ${dir}`;
 }
 
 interface SummaryRow {
@@ -131,7 +123,8 @@ function toSummary(r: SummaryRow): ProjectSummary {
 
 export async function listProjects(user: AuthUser, query: ProjectListQuery): Promise<Page<ProjectSummary>> {
   const search = query.q?.trim() ? escapeLike(query.q.trim()) : null;
-  const { rows } = await pool.query<SummaryRow>(summarySql(query.sort, query.order), [
+  const needLate = query.sort === 'lateTasks' || query.hasLateTasks === true;
+  const { rows } = await pool.query<SummaryRow>(summarySql(query.sort, query.order, needLate), [
     user.id,
     user.role === 'super_admin',
     null,
@@ -150,7 +143,7 @@ export async function listProjects(user: AuthUser, query: ProjectListQuery): Pro
 
 export async function getProject(user: AuthUser, code: string): Promise<ProjectSummary> {
   const access = await requireProjectAccess(user, code);
-  const { rows } = await pool.query<SummaryRow>(summarySql('name', 'asc'), [
+  const { rows } = await pool.query<SummaryRow>(summarySql('name', 'asc', false), [
     user.id, true, access.projectId, null, null, 1, 0,
   ]);
   return toSummary(rows[0]);
@@ -168,6 +161,7 @@ export async function createProject(
     );
     const { id, code } = rows[0];
     await client.query(`INSERT INTO stores (kind, project_id) VALUES ('project', $1)`, [id]);
+    await client.query('INSERT INTO project_task_stats (project_id) VALUES ($1)', [id]);
     await client.query(`INSERT INTO project_members (project_id, user_id, is_admin) VALUES ($1, $2, true)`, [id, user.id]);
     return code;
   });

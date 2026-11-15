@@ -64,7 +64,7 @@ async function seed(client: pg.PoolClient) {
   await client.query(`SET synchronous_commit = off; SET work_mem = '256MB'; SELECT setseed(0.42)`);
 
   await step(client, 'clear tables', `
-    TRUNCATE users, sessions, projects, project_members, invitations, tasks, task_dependencies,
+    TRUNCATE users, sessions, projects, project_task_stats, project_members, invitations, tasks, task_dependencies,
              materials, stores, store_stock, deliveries, delivery_lines RESTART IDENTITY CASCADE;
     INSERT INTO stores (kind) VALUES ('company')`);
 
@@ -177,6 +177,10 @@ async function seed(client: pg.PoolClient) {
        AND random() < 0.7
        AND NOT EXISTS (SELECT 1 FROM task_dependencies dep JOIN tasks pre ON pre.id = dep.depends_on_id
                         WHERE dep.task_id = t.id AND pre.status <> 'done')`);
+
+  await step(client, 'project task totals', `
+    INSERT INTO project_task_stats (project_id, task_count, done_count)
+    SELECT project_id, count(*), count(*) FILTER (WHERE status = 'done') FROM tasks GROUP BY project_id`);
 
   await step(client, 'blocked counters', `
     UPDATE tasks t SET open_prereq_count = c.n

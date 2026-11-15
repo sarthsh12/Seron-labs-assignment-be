@@ -86,9 +86,10 @@ Rows are generated inside Postgres with `generate_series`, so nothing large is s
   nothing. Members who are not admins get `403` on admin-only actions, since they already know the
   project exists.
 - **Public IDs are the codes** (`PRJ-0042`); internal numeric ids never leave the API.
-- **The projects list is one SQL query**: visible projects, member counts and task stats (counts by
-  status, percent done, late, blocked) are computed together, and the list filter comes from the
-  same membership join, so counts can never include projects the user can't see.
+- **The projects list is one SQL query in three stages**: rank the projects the user can see using
+  cheap numbers, take one page, then compute full task stats (counts by status, late, blocked) and
+  member counts for just that page. The visibility filter comes from the same membership join, so
+  counts can never include projects the user can't see.
 - **Late is computed from today's date at read time**, never stored, so it is always current.
 - **Blocked uses a stored counter** (`open_prereq_count`, the number of direct prerequisites not
   yet done) kept up to date when tasks change status and when dependencies change. That turns
@@ -175,5 +176,33 @@ Rows are generated inside Postgres with `generate_series`, so nothing large is s
 - **Removing a material is a soft delete**, refused while any store holds it or has it in transit.
 - **Quantities are `numeric(14,3)`** (exact, allows 2.5 m³) and are compared in SQL, never as
   JavaScript floats.
+
+### Performance
+
+Measured against the full seed data (median of 5 requests, through the API):
+
+| Screen | Before | After |
+|---|---|---|
+| Projects list, SuperAdmin (all 2,000 projects) | 201 ms | 10 ms |
+| ... sorted by late tasks | 190 ms | 25 ms |
+| ... sorted by percent done | 196 ms | 9 ms |
+| Company deliveries (400k) | 251 ms | 18 ms |
+| Every other screen | 4–90 ms | 4–40 ms |
+
+What changed:
+
+- **Page first, details after.** The projects list used to compute task stats for every visible
+  project (reading all 500k tasks) before picking 20. Now only the page's 20 projects get full stats.
+- **Stored totals for percent done.** `project_task_stats` holds each project's task and done counts,
+  updated in the same transaction as every task create, complete, reopen and delete. It's a separate
+  table so these updates don't contend with locks on the project row. Tested with 30 concurrent
+  creates and completes: stored totals match a recount.
+- **Late counts from partial indexes.** Two indexes contain only tasks that can be late (not
+  started, and in progress), so counting late tasks reads only those, never the 320k done tasks.
+- **Separate count query for deliveries.** `count(*) OVER ()` next to `LIMIT 20` forced Postgres to
+  read and sort all 400k matching rows. The page now walks the `sent_at` index and stops after 20,
+  and the total is a separate count; both run at the same time.
+- Lists over small sets (a project's tasks, materials, stock) keep `count(*) OVER ()`: they are
+  already fast, and one query is simpler.
 
 _More sections (trade-offs, API docs, seeding data) will be added as the project grows._
