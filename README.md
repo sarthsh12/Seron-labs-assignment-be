@@ -54,6 +54,52 @@ The data follows the same rules as the API:
 
 Rows are generated inside Postgres with `generate_series`, so nothing large is sent over the connection.
 
+## API documentation
+
+[docs/API.md](docs/API.md) lists every endpoint with request and response examples, maps each of the
+11 screens in the brief to its endpoints, and explains tokens, IDs, pagination and errors.
+
+## Tests
+
+```bash
+npm install
+docker compose up -d db   # the tests need Postgres
+npm test
+```
+
+40 tests send real HTTP requests to the app (in memory, through Fastify's `inject`) against a real
+Postgres. They use a separate `sitetrack_test` database, created automatically, so seeded data is
+never touched. They cover the rules most likely to break:
+
+- data security: non-members get the same 404 as for a missing project; lists show only what you
+  may see
+- IDs: unique and gap-free under concurrent creates, never reused
+- cycles: rejected directly and through other tasks
+- Blocked and Late; allowed status changes; dependency chains with step counts on a diamond graph
+- the last project admin; two admins demoting each other at the same moment
+- sessions: rotation, logout and removal take effect on the next request
+- stock: never negative with 10 concurrent sends; every movement is all or nothing
+
+Concurrency is tested by firing requests at the same moment with `Promise.all`. Breaking the cycle
+check or removing the stock row lock makes the matching tests fail.
+
+## Project layout
+
+```
+migrations/      numbered .sql files, applied in order on startup
+src/
+  server.ts      starts the API (runs migrations first)
+  app.ts         routes, error handling, authentication hook
+  routes/        HTTP layer: validates input with zod, calls a service
+  auth/          tokens, sessions, project access checks, roles
+  projects/ members/ notifications/ tasks/ materials/ stores/ deliveries/
+                 one service per area: the SQL and business rules
+  lib/           errors, pagination, password hashing, small helpers
+  seed.ts        loads data at the brief's scale
+test/            API tests
+docs/API.md      API reference
+```
+
 ## Decisions
 
 - **TypeScript + Fastify**: fast, well-typed, and widely used.
@@ -177,7 +223,7 @@ Rows are generated inside Postgres with `generate_series`, so nothing large is s
 - **Quantities are `numeric(14,3)`** (exact, allows 2.5 m³) and are compared in SQL, never as
   JavaScript floats.
 
-### Performance
+## Performance
 
 Measured against the full seed data (median of 5 requests, through the API):
 
@@ -205,4 +251,49 @@ What changed:
 - Lists over small sets (a project's tasks, materials, stock) keep `count(*) OVER ()`: they are
   already fast, and one query is simpler.
 
-_More sections (trade-offs, API docs, seeding data) will be added as the project grows._
+## Trade-offs
+
+- **Three stored counters.** `open_prereq_count` (Blocked), `in_transit_out` (stock in transit) and
+  `project_task_stats` (percent done) make the big screens fast. The cost is that every write that
+  affects them must update them in the same transaction. That is handled in one place per counter
+  and covered by tests and by the seed checks, but it is code that a "compute on read" design would
+  not need.
+- **One extra task rule.** A task that has started can only gain dependencies on tasks that are done.
+  The brief doesn't ask for it, but without it Blocked could not be answered from direct
+  prerequisites alone. It only refuses cases that would make a running task blocked, which is
+  unlikely to be wanted.
+- **Task details load the project's whole dependency graph.** Up to 3,000 tasks and a few thousand
+  edges this takes a few milliseconds and gives exact shortest distances. Much larger projects would
+  need a depth limit or a precomputed closure.
+- **Page numbers, not cursors.** `page`/`pageSize` is simple for the frontend and supports "jump to
+  page 7", but deep pages get slower (page 500 of company deliveries takes about 37 ms) and rows can
+  shift between pages while data changes. Cursor pagination would fix both.
+- **List totals are counted separately** from the page (deliveries) so the page query can stop after
+  20 rows. Under heavy writes the total can be off by a few for a moment.
+- **Every request reads the session and membership from the database.** That makes logout, role
+  changes and removal take effect immediately, as the brief requires, at the cost of one indexed
+  lookup per request.
+- **Anyone can register as a SuperAdmin**, because the brief says the role is chosen at
+  registration. In production, elevated roles would be granted by an existing admin.
+- **Inviting by email confirms to project admins whether an email is registered.** The alternative,
+  a user directory, would reveal far more.
+- **Supplier stock has no history.** Adding stock updates the quantity; there is no ledger of every
+  stock movement beyond deliveries.
+- **Tests need Postgres.** Most rules live in SQL (locks, constraints, recursive queries), so testing
+  against the real database finds real bugs; the cost is slower tests and a running database.
+
+## With more time
+
+- **Security hardening:** rate-limit login and register; detect refresh-token reuse (a stolen,
+  already-rotated token would end all of that user's sessions); add an absolute session lifetime
+  and "log out of all devices"; grant elevated roles through an admin instead of at registration.
+- **Database timeouts:** `statement_timeout` and `lock_timeout`, so one stuck request can't hold
+  locks or connections; return `503` and let the client retry.
+- **A stock ledger:** one row per movement (supplier delivery, send, record, reject, cancel), so
+  every quantity can be audited and rebuilt.
+- **Cursor pagination** for the large lists, and an OpenAPI spec generated from the zod schemas,
+  with Swagger UI and typed clients for the frontend.
+- **Load testing** with many concurrent users (for example k6), then tune the connection pool and
+  add PgBouncer if needed.
+- **CI** running type checks and tests on every push, plus metrics and slow-query logging.
+

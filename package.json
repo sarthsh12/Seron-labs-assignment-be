@@ -6,9 +6,10 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "migrate": "tsx src/migrate.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test",
     "seed": "node dist/seed.js",
-    "seed:dev": "tsx src/seed.ts"
+    "seed:dev": "tsx src/seed.ts",
+    "test": "DATABASE_URL=${TEST_DATABASE_URL:-postgres://sitetrack:sitetrack@localhost:5433/sitetrack_test} LOG_LEVEL=silent node --import tsx --test --test-reporter=spec --test-concurrency=1 \"test/**/*.test.ts\""
   },
   "license": "ISC",
   "description": "SiteTrack backend API",
